@@ -42,7 +42,8 @@ from fastapi.responses import FileResponse, JSONResponse
 import api
 import lan
 from echo_guard import EchoGuard
-from engine import DEFAULT_SYSTEM_PROMPT, Fragmenter, GpuKeepAwake, Talker, Thinker, log
+from engine import DEFAULT_SYSTEM_PROMPT, Fragmenter, GpuKeepAwake, log
+from runtime import IS_MLX, Talker, Thinker, empty_cache, memory
 from tools import FILLERS, Toolbox
 
 TOOLBOX = Toolbox()  # web search, weather, calculator, clock, timers, Home Assistant, Jellyfin, Hermes
@@ -231,7 +232,7 @@ def _load():
     torch.set_grad_enabled(False)
     from silero_vad import load_silero_vad
 
-    if os.environ.get("MING_VRAM_LIMIT_GB"):  # emulate a smaller GPU (testing)
+    if not IS_MLX and os.environ.get("MING_VRAM_LIMIT_GB"):  # emulate a smaller GPU (testing)
         total = torch.cuda.get_device_properties(0).total_memory
         torch.cuda.set_per_process_memory_fraction(min(1.0, float(os.environ["MING_VRAM_LIMIT_GB"]) * 2**30 / total))
 
@@ -254,19 +255,17 @@ def _load():
     VOICE_DIR.mkdir(exist_ok=True)
     for f in sorted(VOICE_DIR.glob("*.pt")):
         try:
-            ENGINE["custom_voices"][f.stem] = torch.load(f, map_location="cuda:0")
+            ENGINE["custom_voices"][f.stem] = torch.load(f, map_location="cpu" if IS_MLX else "cuda:0")
         except Exception as e:
             log(f"could not load voice {f.name}: {e}")
     _warmup()
     load_conversation(ENGINE["thinker"])
     # Start only after all graph captures (it must not launch kernels while a capture is running).
     # Without it, the first request after ~20 s of GPU idle stalls for minutes under WSL (not needed on native Linux).
-    if os.environ.get("MING_GPU_KEEPAWAKE", "1" if os.path.exists("/dev/dxg") else "0") == "1":
+    if not IS_MLX and os.environ.get("MING_GPU_KEEPAWAKE", "1" if os.path.exists("/dev/dxg") else "0") == "1":
         GpuKeepAwake().start()
-    torch.cuda.empty_cache()
-    free, total = torch.cuda.mem_get_info()
-    log(f"GPU memory: {torch.cuda.memory_allocated() / 2**30:.2f} GiB allocated, "
-        f"{torch.cuda.memory_reserved() / 2**30:.2f} GiB reserved, {free / 2**30:.2f} GiB free of {total / 2**30:.2f}")
+    empty_cache()
+    log(f"{'Metal unified' if IS_MLX else 'GPU'} memory: {memory()}")
     ENGINE["ready"] = True
     log("READY — open http://localhost:%s" % os.environ.get("PORT", "8000"))
 
@@ -306,6 +305,14 @@ def _warmup():
     pays a JIT stall (fla autotunes per block count, i.e. per prompt-length range)."""
     th, tk = ENGINE["thinker"], ENGINE["talker"]
     t = time.time()
+    if IS_MLX:
+        for _ in th.stream(None, user_text="Say hi.", max_new_tokens=4):
+            pass
+        for _ in tk.synth_stream("Hello.", VOICES[0], max_steps=100):
+            pass
+        th.reset()
+        log(f"Metal warmup done in {time.time() - t:.1f}s")
+        return
     rng = np.random.default_rng(0)
     txt = ""
     # Compiled kernels and autotune results persist on disk (Triton/MIOpen caches), so the full sweep
@@ -409,9 +416,7 @@ def health():
     return {"ready": bool(ENGINE.get("ready")), "ctx_tokens": th.ctx_len() if th else 0,
             "max_ctx": th.max_ctx if th else 0, "connected": ACTIVE.get("sess") is not None,
             "talker_steps": getattr(ENGINE.get("talker"), "steps", None),
-            "gpu_mem_gib": round(torch.cuda.memory_allocated() / 2**30, 2),
-            "gpu_reserved_gib": round(torch.cuda.memory_reserved() / 2**30, 2),
-            "gpu_free_gib": round(torch.cuda.mem_get_info()[0] / 2**30, 2)}
+            "backend": "mlx" if IS_MLX else "cuda", **memory()}
 
 
 @app.get("/api/ha/areas")
@@ -457,8 +462,12 @@ def debug_mem(top: int = 15):
     import gc
     import tracemalloc
     gc.collect()
-    rss = int(open("/proc/self/statm").read().split()[1]) * 4096 / 2**20
-    gpu = torch.cuda.memory_allocated() / 2**20
+    if IS_MLX:
+        import subprocess
+        rss = int(subprocess.check_output(["ps", "-o", "rss=", "-p", str(os.getpid())])) / 1024
+    else:
+        rss = int(open("/proc/self/statm").read().split()[1]) * 4096 / 2**20
+    gpu = memory()["gpu_mem_gib"] * 1024
     out = {"rss_mb": round(rss), "rss_growth_mb": round(rss - _MEM_SNAP.get("rss", rss)),
            "gpu_mb": round(gpu), "gpu_growth_mb": round(gpu - _MEM_SNAP.get("gpu", gpu)), "threads": threading.active_count()}
     _MEM_SNAP["rss"], _MEM_SNAP["gpu"] = rss, gpu

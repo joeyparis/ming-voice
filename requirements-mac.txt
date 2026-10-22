@@ -1,0 +1,13 @@
+# Native Apple Silicon inference. Pinned to the Ming Audio implementation.
+mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@24547fd21503d897b52924306608ea727a9f9405
+torch==2.11.0
+torchaudio==2.11.0
+soundfile==0.14.0
+fastapi==0.153.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.20
+segno==1.6.6
+silero-vad==6.2.3
+websockets==17.3
+ddgs==9.16.0
+onnxruntime==1.31.0
