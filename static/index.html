@@ -134,6 +134,7 @@
   .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
   #phoneBtn { display: none; }
   .is-local #phoneBtn { display: inline-flex; }
+  #phoneCopy[hidden] { display: none; }
   @media (max-width: 900px) {
     .main { grid-template-columns: 1fr; }
     aside { display: none; border-left: none; border-top: 1px solid var(--line); }
@@ -948,7 +949,7 @@ async function pollHealth() {
 }
 setInterval(pollHealth, 4000); pollHealth();
 
-// ---------------------------------------------------------------- phone access (shown on the PC itself)
+// ---------------------------------------------------------------- phone access (shown on the host computer)
 let phoneUrl = null;
 async function loadLan() {
   try {
@@ -963,7 +964,7 @@ $('phoneBtn').onclick = async () => {
   if (!j || !j.local) return;
   if (j.running) {
     phoneUrl = j.urls[0];
-    body.innerHTML = `<p>Scan with your phone's camera (same Wi-Fi network as this PC):</p><div class="qr">${j.qr_svg}</div>
+    body.innerHTML = `<p>Scan with your phone's camera (same Wi-Fi network as this computer):</p><div class="qr">${j.qr_svg}</div>
       <div class="urlbox"></div>
       <ol><li>Your phone will warn that the connection is not private (the certificate is self-signed): tap
       <b>Advanced → Proceed</b> (Safari: <b>Show Details → visit this website</b>).</li>
@@ -973,10 +974,15 @@ $('phoneBtn').onclick = async () => {
     $('phoneCopy').hidden = false;
   } else {
     phoneUrl = null;
-    body.innerHTML = `<p>Phone access is off. Start it on this PC with <b>windows\\Ming Voice (phone).cmd</b>, or run:</p>
-      <div class="urlbox">python windows\\lan_proxy.py</div>
-      <p>Then press <b>Phone</b> again for the QR code. API clients on your network use the same address with
-      <code>Authorization: Bearer ${j.key}</code>.</p>`;
+    const is_mac = j.platform === 'darwin';
+    const is_unix = is_mac || j.platform === 'linux';
+    const startup_command = is_unix ? 'bash phone.sh' : 'python windows\\lan_proxy.py';
+    const instructions = is_unix
+      ? `Phone access is off. ${is_mac ? 'On your Mac, open Terminal' : 'Open a terminal'} in the Ming Voice folder and run:`
+      : 'Phone access is off. Start it with <b>windows\\Ming Voice (phone).cmd</b>, or run:';
+    body.innerHTML = `<p>${instructions}</p><div class="urlbox"></div>
+      <p>Keep that terminal window open, then press <b>Phone</b> again for the QR code.</p>`;
+    body.querySelector('.urlbox').textContent = startup_command;
     $('phoneCopy').hidden = true;
   }
   $('phoneDlg').showModal();

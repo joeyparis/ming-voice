@@ -150,7 +150,8 @@ async def main():
             await asyncio.sleep(10)
 
     asyncio.create_task(heartbeat())
-    print(f"Phone access: https://{ips[0]}:{args.port}  (open the QR code on http://localhost:8000 -> Phone)")
+    print(f"Phone access: https://{ips[0]}:{args.port}  "
+          f"(open the QR code on http://localhost:{os.environ.get('PORT', '8000')} -> Phone)")
     async with server:
         await server.serve_forever()
 
