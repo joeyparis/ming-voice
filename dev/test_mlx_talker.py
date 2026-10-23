@@ -256,8 +256,8 @@ def test_anchor_setting_keeps_designed_voices_when_builtin_anchors_are_disabled(
 
 @pytest.mark.parametrize(("text", "anchored"), [
     ("Hello there.", True),
-    ("你好。", False),
-    ("Hello，你好。", False),
+    ("\u4f60\u597d\u3002", False),
+    ("Hello\uff0c\u4f60\u597d\u3002", False),
 ])
 def test_english_acoustic_anchor_is_used_only_without_chinese_text(
     speech: tuple[Talker, LatentSampler], text: str, anchored: bool,
