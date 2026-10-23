@@ -37,7 +37,11 @@ def lan_ips():
         s.close()
     except OSError:
         pass
-    for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+    try:
+        host_addresses = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except socket.gaierror:
+        host_addresses = []  # a usable default-route address does not require a resolvable hostname
+    for info in host_addresses:
         ips.append(info[4][0])
     out = []
     for i, ip in enumerate(ips):
