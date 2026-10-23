@@ -6,7 +6,10 @@ if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
   printf '%s\n' 'This installer requires an Apple Silicon Mac.' >&2
   exit 1
 fi
-command -v uv >/dev/null
+if ! command -v uv >/dev/null; then
+  printf '%s\n' 'uv is required. Install it from https://docs.astral.sh/uv/getting-started/installation/ and rerun bash setup_mac.sh.' >&2
+  exit 1
+fi
 [ -d .venv ] || uv venv --python 3.13 .venv
 uv pip install --python .venv/bin/python -r requirements-mac.txt
 if [ "${MING_SKIP_MODEL:-0}" != 1 ]; then
