@@ -30,8 +30,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-MODEL_DIR = Path(os.environ.get("MING_MODEL_DIR", Path(__file__).resolve().parent / "model")).expanduser()
-DEVICE = torch.device("cuda:0")
+MODEL_DIR = Path(os.environ.get("MING_MODEL_DIR", Path(__file__).resolve().parent /
+                               ("model-mlx" if sys.platform == "darwin" else "model"))).expanduser()
+# On macOS these tensors are only tokenizer/audio transport; inference uses MLX.
+DEVICE = torch.device("cpu" if sys.platform == "darwin" else "cuda:0")
 DTYPE = torch.bfloat16
 EOS_IDS = {156892, 156895}
 ROLE_END = "<|role_end|>"
@@ -984,6 +986,16 @@ class Thinker:
         self.cur_len += 1
         return int(self.tok_buf.item())
 
+    def _audio_input(self, wav16k):
+        wav16k = pad_to_bucket(wav16k)
+        mel = self._mel(torch.from_numpy(np.ascontiguousarray(wav16k, dtype=np.float32)).to(DEVICE),
+                        n_mels=self.n_mels)
+        mel = mel.transpose(0, 1).unsqueeze(0).contiguous()
+        n_audio = self.processor._num_audio_tokens(mel.shape[1])
+        human = "<|audio_start|>" + "<|audio_pad|>" * n_audio + "<|audio_end|>"
+        return human, dict(audio_feats=mel.to(DTYPE),
+                           audio_feats_lengths=torch.tensor([[mel.shape[1]]], dtype=torch.long))
+
     def render_history(self, turns: list[tuple[str, str]]) -> str:
         """Earlier (user, assistant) text exchanges in the chat format, e.g. from an API request."""
         return "".join(f"<role>HUMAN</role>{u}{ROLE_END}<role>ASSISTANT</role>\n<think></think>{a}{ROLE_END}"
@@ -1010,14 +1022,7 @@ class Thinker:
             return heard["text"]
         wav0 = wav16k
         if wav16k is not None:
-            wav16k = pad_to_bucket(wav16k)
-            mel = self._mel(torch.from_numpy(np.ascontiguousarray(wav16k, dtype=np.float32)).to(DEVICE),
-                            n_mels=self.n_mels)
-            mel = mel.transpose(0, 1).unsqueeze(0).contiguous()
-            n_audio = self.processor._num_audio_tokens(mel.shape[1])
-            human = "<|audio_start|>" + "<|audio_pad|>" * n_audio + "<|audio_end|>"
-            feats = dict(audio_feats=mel.to(DTYPE),
-                         audio_feats_lengths=torch.tensor([[mel.shape[1]]], dtype=torch.long))
+            human, feats = self._audio_input(wav16k)
         human += user_text or ""
         # With tools, the reply starts from a private note of the local time (asked "what time is it?", the model
         # would rather offer to check than call get_current_time; the system prompt can't hold a changing time).

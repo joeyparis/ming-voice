@@ -29,7 +29,8 @@ from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from engine import DEFAULT_SYSTEM_PROMPT, Fragmenter, Talker, log
+from engine import DEFAULT_SYSTEM_PROMPT, Fragmenter, log
+from runtime import Talker
 
 router = APIRouter(tags=["OpenAI-compatible API"])
 MODEL_ID = "ming-3.0-audio-tiny"

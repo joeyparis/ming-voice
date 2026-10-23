@@ -84,6 +84,10 @@ Measured on a Radeon RX 7900 XTX (24 GB):
 
 ## Quick start
 
+**Apple Silicon Mac (this fork):** see [the native MLX setup](docs/macos.md).
+Run `bash setup_mac.sh`, then `bash run.sh`. It uses the integrated GPU and
+unified memory with a four-bit model, without CUDA or ROCm.
+
 ### Requirements
 
 - **Linux** (x86_64): Arch, CachyOS, EndeavourOS, Manjaro, Ubuntu, Debian, Pop!_OS, Mint, Fedora, Nobara or

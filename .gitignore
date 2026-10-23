@@ -1,6 +1,9 @@
 # model weights, environments, downloaded wheels
 model/
 model_extra/
+model-mlx/
+model-frontend/
+.native/
 wheels/
 .venv/
 .venv-*/
