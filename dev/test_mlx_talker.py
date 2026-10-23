@@ -13,7 +13,7 @@ from mlx_audio.tts.models.bailingmm.bailingmm import AudioVAE
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from metal_worker import on_metal
-from mlx_talker import Talker
+from mlx_talker import NativeTalker, Talker
 
 
 class RandomFlow:
@@ -53,6 +53,8 @@ class LatentSampler:
                 yield self.latents[:, index:index + 1], index + 1 == self.latents.shape[1]
         finally:
             self.closed_on = threading.current_thread()
+
+    sample_anchored = sample
 
 
 @pytest.fixture
@@ -274,4 +276,96 @@ def test_english_acoustic_anchor_is_used_only_without_chinese_text(
     assert (reference_text is not None) is anchored
     assert (reference_latents is not None) is anchored
     assert audio.size > 0
+    assert np.isfinite(audio).all()
+
+
+@pytest.fixture
+@on_metal
+def native_sampler(monkeypatch: pytest.MonkeyPatch) -> NativeTalker:
+    from mlx_audio.sts.models.ming_v3_audio.talker import TalkerFlowLoss
+
+    # Use real attention, latent projection, diffusion, and stopping with tiny weights.
+    mx.random.seed(17)
+    backbone = {
+        "model_type": "qwen2", "rms_norm_eps": 1e-6,
+        "hidden_size": 16, "intermediate_size": 32, "num_hidden_layers": 1,
+        "num_attention_heads": 2, "num_key_value_heads": 1, "vocab_size": 8,
+        "max_position_embeddings": 512, "rope_theta": 1000000.0,
+        "is_causal": True, "use_sliding_window": True, "sliding_window": 64,
+    }
+    flow = {"hidden_size": 16, "depth": 1, "num_heads": 2,
+            "patch_size": 1, "history_patch_size": 1}
+    model = NativeTalker({
+        "model_type": "dense", "llm_config": backbone,
+        "audio_tokenizer_config": {
+            "sample_rate": 400, "patch_size": 4,
+            "enc_kwargs": {"backbone": backbone, "input_dim": 8, "hop_size": 8, "latent_dim": 4},
+            "dec_kwargs": {"backbone": backbone, "output_dim": 8, "latent_dim": 4},
+        },
+        "ditar_config": flow,
+        "aggregator_config": {"hidden_size": 16, "depth": 1, "num_heads": 2},
+    })
+    monkeypatch.setattr(model, "flowloss", TalkerFlowLoss(4, 16, flow))
+    model.stop_head.weight = mx.zeros_like(model.stop_head.weight)
+    model.stop_head.bias = mx.array([-10.0, 10.0])
+
+    class Tokenizer:
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            return [2 if text == "<audio>" else 1]
+
+        def convert_tokens_to_ids(self, _token: str) -> int:
+            return 2
+
+    monkeypatch.setattr(model, "tokenizer", Tokenizer())
+    model.eval()
+    return model
+
+
+@on_metal
+@pytest.mark.parametrize(("anchored", "limit", "count"), [
+    (False, 40, 5), (True, 40, 17), (True, 7, 7),
+])
+def test_native_sampler_honors_anchor_minimum_without_exceeding_limit(
+    native_sampler: NativeTalker, anchored: bool, limit: int, count: int,
+) -> None:
+    # Given a real tiny native sampler whose stop head always requests an early stop.
+    text = "hello " * 10
+    anchor = mx.zeros((1, 2, 4)) if anchored else None
+    # When generation uses an acoustic anchor, no anchor, or a shorter explicit limit.
+    sample = native_sampler.sample_anchored if anchored else native_sampler.sample
+    output = list(sample(
+        "prompt", text, prompt_text="reference" if anchored else None,
+        prompt_latent=anchor, max_decode_steps=limit, flow_steps=1,
+    ))
+    # Then anchored speech waits for the upstream minimum, but respects the hard limit.
+    assert len(output) == count
+    assert all(np.isfinite(np.array(latent)).all() for latent, _last in output)
+
+
+def test_anchored_speech_flushes_the_native_sampler_tail(
+    speech: tuple[Talker, LatentSampler], native_sampler: NativeTalker,
+) -> None:
+    # Given the public adapter with real tiny native sampling and audio decoding.
+    talker, _sampler = speech
+    text = " ".join(["hello"] * 10)
+
+    @on_metal
+    def configure() -> int:
+        talker.t = native_sampler
+        talker.steps = 1
+        talker.anchors["US_Stella"] = {
+            "text": "reference", "latents": mx.zeros((1, 2, 4)), "instruction": None,
+        }
+        expected, _, _ = native_sampler.audio.decode(
+            mx.zeros((1, 16, 4)), use_cache=False, last_chunk=True,
+        )
+        expected = mx.array(expected)
+        mx.eval(expected)
+        return expected.shape[1]
+
+    expected_samples = configure()
+    # When the adapter streams the anchored request through its Metal worker.
+    audio = np.concatenate(list(talker.synth_stream(text, max_steps=40)))
+    # Then it includes the full minimum-length utterance and final decoder tail.
+    assert audio.size == expected_samples
     assert np.isfinite(audio).all()

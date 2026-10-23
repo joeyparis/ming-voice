@@ -12,7 +12,8 @@ from pathlib import Path
 import mlx.core as mx
 import numpy as np
 import torch
-from mlx_audio.sts.models.ming_v3_audio.talker import Talker as NativeTalker
+from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.sts.models.ming_v3_audio.talker import Talker as BaseTalker
 from mlx_audio.tts.models.bailingmm.bailingmm import (
     MING3_MAX_FRAGMENT_LENGTH,
     _split_fragments,
@@ -23,6 +24,45 @@ from mlx_audio.utils import resample_audio
 
 from engine import MODEL_DIR, Talker as VoicePolicy, log
 from metal_worker import on_metal
+
+
+class NativeTalker(BaseTalker):
+    """Pinned MLX sampler with Ming Voice's anchored minimum generation length."""
+
+    # Adapted from mlx-audio 24547fd, sts/models/ming_v3_audio/talker.py.
+    def sample_anchored(
+        self, prompt: str, text: str, instruction: str | None = None,
+        prompt_text: str | None = None, max_decode_steps: int = 1000,
+        cfg: float = 2.0, sigma: float = 0.25, temperature: float = 0.0,
+        flow_steps: int = 10, prompt_latent: mx.array | None = None,
+        spk_emb: list[mx.array] | None = None,
+    ) -> Generator[tuple[mx.array, bool], None, None]:
+        _, embeds = self._prepare_input_embed(
+            prompt, text, instruction, prompt_latent, prompt_text, spk_emb,
+        )
+        if embeds.shape[1] + max_decode_steps > self.llm_args.max_position_embeddings:
+            raise ValueError("Talker prompt and generation exceed the context budget")
+        if max_decode_steps < 1:
+            raise ValueError("max_decode_steps must be positive")
+        cache = [KVCache() for _ in self.layers]
+        history = mx.zeros((1, self.history_patch_size, self.latent_dim), embeds.dtype)
+        if prompt_latent is not None:
+            available = min(history.shape[1], prompt_latent.shape[1])
+            history[:, -available:] = prompt_latent[:, -available:]
+        min_steps = max(3, int(0.25 * len(text))) if prompt_latent is not None else 3
+        for step in range(max_decode_steps):
+            hidden = self._forward_llm_hidden(embeds, cache)[:, -1:]
+            latent = mx.array(self.flowloss.sample(
+                hidden, history, cfg=cfg, sigma=sigma, temperature=temperature,
+                steps=flow_steps, patch_size=self.patch_size,
+            ))
+            stop = mx.softmax(self.stop_head(hidden).astype(mx.float32), axis=-1)[0, 0, 1]
+            last = step > min_steps and bool(stop > 0.5)
+            yield latent, last
+            if last:
+                return
+            embeds = self.linear_proj_audio(latent.astype(hidden.dtype))
+            history = mx.concatenate([history[:, self.patch_size:], latent], axis=1)
 
 
 class Talker:
@@ -107,7 +147,8 @@ class Talker:
         prompt = "Please generate speech based on the following description.\n"
         pending: list[mx.array] = []
         state, pkv, calls = (None, None, None), None, 0
-        for step, (latent, last) in enumerate(self.t.sample(
+        sample = self.t.sample_anchored if anchor else self.t.sample
+        for step, (latent, last) in enumerate(sample(
             prompt, text, instruction=instruction,
             prompt_text=anchor["text"] if anchor else None,
             prompt_latent=anchor["latents"] if anchor else None,
