@@ -75,7 +75,8 @@ def ensure_cert(ips):
     CERTS.mkdir(exist_ok=True)
     cmd = _openssl()
     if cmd is None:
-        sys.exit("openssl not found (install Git for Windows, or openssl in WSL)")
+        sys.exit("openssl not found (install OpenSSL with your Mac/Linux package manager, "
+                 "or install Git for Windows or openssl in WSL)")
     host = socket.gethostname()
     san = ",".join([f"IP:{ip}" for ip in names] + [f"DNS:{host}", "DNS:localhost"])
     wsl = cmd[0] == "wsl"
