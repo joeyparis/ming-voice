@@ -8,10 +8,16 @@ The Linux/Windows CUDA and ROCm backend remains available.
 ## Setup
 
 Use an Apple Silicon Mac with at least 16 GB unified memory, Python 3.13
-(managed by `uv`), and approximately 13 GB free disk total, including the
+(managed by `uv`), and approximately 14 GB free disk total, including the
 8.8 GB four-bit model. A 32 GB or larger Mac gives other applications
 more room. Install `uv` and Git first if they are not already available.
-Git is required to install the pinned MLX Audio source revision.
+Git is required to install the pinned MLX Audio source revision. Install Xcode
+Command Line Tools with `xcode-select --install` before the first setup.
+The upstream speech frontend needs OpenFst, Pynini, FastText, and inflect.
+Setup builds OpenFst 1.8.4 under `.native/` and the Python extensions in the
+virtual environment, without Homebrew, administrator access, or system Python
+changes. The first native build takes longer than subsequent setup runs.
+`MING_BUILD_JOBS` controls its parallel compiler jobs (default: 4).
 
 ```sh
 bash setup_mac.sh
@@ -25,6 +31,11 @@ Stop the server with Ctrl-C to release its unified memory.
 The MLX Audio source revision and model revision are pinned in the installer.
 Weights live in `model-mlx/`, not the upstream `model/` directory. Set
 `MING_MODEL_DIR` during both setup and startup to use a different location.
+CPU frontend code, normalization FSTs, and the language detector are downloaded
+separately into `model-frontend/` at upstream revision
+`3c9578f641b6745abf2d1239dc8419726f37c0e2`. Set `MING_FRONTEND_DIR` during both
+setup and startup to relocate those assets. The CUDA inference package is not
+imported. Keep `.native/` with the checkout: its libraries are used by Pynini.
 Do not use the Linux/Windows installer on a Mac.
 
 ## Behavior
@@ -47,6 +58,13 @@ Do not use the Linux/Windows installer on a Mac.
   must not evaluate MLX graphs themselves; MLX streams belong to their creator.
 - Built-in voices, voice anchors (including Jarvis), and newly cloned voices
   use the native MLX Talker. GPU-specific developer scripts still target CUDA.
+- Anchored voices retain the upstream minimum generation length so a reference
+  ending in silence cannot stop a longer fragment after only a few latents.
+- Direct TTS and conversational speech share upstream frontend preparation:
+  language-tag removal, request-level language detection, English/Chinese
+  number and text normalization, and protected paralinguistic tags. Detected
+  non-English/Chinese requests carry the upstream target-language control and
+  bypass normalization that would strip their characters.
 - `/api/health` reports `backend: "mlx"`. Memory values describe MLX allocations
   and its recommended unified-memory working-set budget, not dedicated VRAM.
 - The Home Assistant connection is configured separately using the upstream

@@ -14,16 +14,12 @@ import numpy as np
 import torch
 from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.sts.models.ming_v3_audio.talker import Talker as BaseTalker
-from mlx_audio.tts.models.bailingmm.bailingmm import (
-    MING3_MAX_FRAGMENT_LENGTH,
-    _split_fragments,
-    ming3_instruction,
-)
 from mlx_audio.tts.models.lingv3_tts.speaker import SpeakerEncoder
 from mlx_audio.utils import resample_audio
 
 from engine import MODEL_DIR, Talker as VoicePolicy, log
 from metal_worker import on_metal
+from speech_frontend import SpeechFrontend
 
 
 class NativeTalker(BaseTalker):
@@ -71,6 +67,7 @@ class Talker:
     @on_metal
     def __init__(self, model_dir: Path = MODEL_DIR, use_graphs: bool = False) -> None:
         started = time.time()
+        self.frontend = SpeechFrontend()
         self.t = NativeTalker.from_pretrained(model_dir / "talker")
         if use_graphs:
             self.t.flowloss.sample = mx.compile(
@@ -113,11 +110,11 @@ class Talker:
         cancel = cancel or threading.Event()
         # Wait for another voice request outside the worker, so it can keep advancing.
         with self.lock:
-            for fragment in _split_fragments(text, MING3_MAX_FRAGMENT_LENGTH):
+            for fragment, prompt in self.frontend.prepare(text, cloned=isinstance(voice, torch.Tensor)):
                 if cancel.is_set():
                     return
                 with ExitStack() as cleanup:
-                    stream = self._synthesize(fragment, voice, cancel, max_steps)
+                    stream = self._synthesize(fragment, voice, cancel, max_steps, prompt)
                     cleanup.callback(on_metal(stream.close))
 
                     @on_metal
@@ -132,19 +129,20 @@ class Talker:
                             yield audio
 
     def _synthesize(self, text: str, voice: str | torch.Tensor,
-                    cancel: threading.Event, max_steps: int) -> Generator[np.ndarray, None, None]:
+                    cancel: threading.Event, max_steps: int,
+                    prompt: str) -> Generator[np.ndarray, None, None]:
         """Advance only on the Metal worker; decoder state belongs to this utterance."""
         if cancel.is_set() or not text.strip():
             return
         cloned = isinstance(voice, torch.Tensor)
         anchor = None if cloned else self.anchors.get(voice)
         instruction = None if cloned else (
-            anchor["instruction"] if anchor and anchor["instruction"] else ming3_instruction(ip=voice))
+            anchor["instruction"] if anchor and anchor["instruction"] else
+            self.frontend.policy.build_task_instruction("IP", ip=voice))
         if re.search(r"[\u4e00-\u9fff]", text):
             anchor = None  # Acoustic anchors are English clips; keep any voice-design instruction.
         speaker = mx.array(voice.float().numpy()) if cloned else None
         speaker = self.t._speaker_embeddings(speaker, not cloned)
-        prompt = "Please generate speech based on the following description.\n"
         pending: list[mx.array] = []
         state, pkv, calls = (None, None, None), None, 0
         sample = self.t.sample_anchored if anchor else self.t.sample

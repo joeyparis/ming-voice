@@ -1,6 +1,7 @@
 """Exercise real cached audio decoding with a deterministic latent producer."""
 import sys
 import threading
+import re
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
@@ -14,6 +15,12 @@ from mlx_audio.tts.models.bailingmm.bailingmm import AudioVAE
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from metal_worker import on_metal
 from mlx_talker import NativeTalker, Talker
+from speech_frontend import SpeechFrontend
+
+
+@pytest.fixture(scope="session")
+def frontend() -> SpeechFrontend:
+    return SpeechFrontend()
 
 
 class RandomFlow:
@@ -59,7 +66,7 @@ class LatentSampler:
 
 @pytest.fixture
 @on_metal
-def speech(monkeypatch: pytest.MonkeyPatch) -> tuple[Talker, LatentSampler]:
+def speech(monkeypatch: pytest.MonkeyPatch, frontend: SpeechFrontend) -> tuple[Talker, LatentSampler]:
     mx.random.seed(17)
     backbone = {
         "model_type": "qwen2", "rms_norm_eps": 1e-6,
@@ -82,6 +89,8 @@ def speech(monkeypatch: pytest.MonkeyPatch) -> tuple[Talker, LatentSampler]:
     sampler = LatentSampler(audio, latents)
     talker = Talker.__new__(Talker)
     monkeypatch.setattr(talker, "t", sampler, raising=False)
+    monkeypatch.setattr("mlx_talker.SpeechFrontend", lambda: frontend)
+    talker.frontend = frontend
     talker.lock = threading.Lock()
     talker.steps = 10
     talker.anchors = {}
@@ -179,14 +188,14 @@ def test_long_input_is_spoken_in_complete_bounded_fragments(
 ) -> None:
     # Given text longer than one native Talker fragment.
     talker, sampler = speech
-    text = " ".join(f"word{index}" for index in range(120))
+    text = " ".join(f"word{chr(97 + index // 26)}{chr(97 + index % 26)}" for index in range(120))
     expected = whole_audio(sampler, sampler.latents.shape[1])
     # When the complete request is synthesized.
     actual = talker.synthesize(text)
     # Then every input word reaches a bounded request with fresh decoder state.
     assert len(sampler.texts) == 3
     assert all(len(piece.split()) <= 50 for piece in sampler.texts)
-    assert " ".join(sampler.texts) == text
+    assert re.findall("[A-Za-z]+", " ".join(sampler.texts)) == text.split()
     np.testing.assert_allclose(actual, np.tile(expected, 3), atol=1e-5, rtol=1e-5)
 
 
@@ -357,7 +366,7 @@ def test_anchored_speech_flushes_the_native_sampler_tail(
             "text": "reference", "latents": mx.zeros((1, 2, 4)), "instruction": None,
         }
         expected, _, _ = native_sampler.audio.decode(
-            mx.zeros((1, 16, 4)), use_cache=False, last_chunk=True,
+            mx.zeros((1, 17, 4)), use_cache=False, last_chunk=True,
         )
         expected = mx.array(expected)
         mx.eval(expected)
@@ -369,3 +378,52 @@ def test_anchored_speech_flushes_the_native_sampler_tail(
     # Then it includes the full minimum-length utterance and final decoder tail.
     assert audio.size == expected_samples
     assert np.isfinite(audio).all()
+
+
+@pytest.mark.parametrize("cloned", [False, True])
+def test_frontend_strips_language_tag_and_normalizes_english_numbers(
+    frontend: SpeechFrontend, cloned: bool,
+) -> None:
+    # Given direct TTS input that does not pass through the conversation Fragmenter.
+    text = "English\tI have 21 apples."
+    # When the upstream CPU frontend prepares either a built-in or cloned voice.
+    fragments = list(frontend.prepare(text, cloned=cloned))
+    # Then only normalized speech text reaches the model.
+    words = re.findall("[A-Za-z]+", " ".join(part for part, _prompt in fragments))
+    assert words == ["I", "have", "twenty", "one", "apples"]
+
+
+def test_frontend_normalizes_chinese_numbers(frontend: SpeechFrontend) -> None:
+    # Given Chinese speech text containing an Arabic number.
+    text = "\u6211\u670921\u4e2a\u82f9\u679c\u3002"
+    # When the pinned Chinese FST frontend prepares the text.
+    fragments = list(frontend.prepare(text, cloned=False))
+    # Then the number is verbalized instead of being left to the speech model.
+    normalized = "".join(part for part, _prompt in fragments)
+    assert "21" not in normalized
+    assert "\u4e8c\u5341\u4e00" in normalized
+
+
+def test_frontend_preserves_paralinguistic_tags(frontend: SpeechFrontend) -> None:
+    # Given a model control token mixed with text requiring number normalization.
+    text = "[Laughter] I have 21 apples."
+    # When the text crosses both English number and FST normalization.
+    fragments = list(frontend.prepare(text, cloned=False))
+    # Then the exact control token survives and no internal placeholder leaks out.
+    normalized = " ".join(part for part, _prompt in fragments)
+    assert "[Laughter]" in normalized
+    assert "MINGPARALINGPLACEHOLDER" not in normalized
+    assert "21" not in normalized
+
+
+def test_frontend_detects_foreign_language_without_destructive_normalization(
+    frontend: SpeechFrontend,
+) -> None:
+    # Given a complete German request with characters outside the zh/en normalizer.
+    text = "Guten Morgen, wie geht es Ihnen heute? Ich freue mich auf einen sch\u00f6nen Tag."
+    # When FastText detects the request's language before fragmentation.
+    fragments = list(frontend.prepare(text, cloned=False))
+    # Then the parsed language control is German and the accented text is preserved.
+    assert all(frontend.policy.target_language_from_prompt(prompt) == "German"
+               for _part, prompt in fragments)
+    assert "sch\u00f6nen" in " ".join(part for part, _prompt in fragments)
