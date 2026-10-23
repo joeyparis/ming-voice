@@ -12,7 +12,11 @@ import mlx.core as mx
 import numpy as np
 import torch
 from mlx_audio.sts.models.ming_v3_audio.talker import Talker as NativeTalker
-from mlx_audio.tts.models.bailingmm.bailingmm import ming3_instruction
+from mlx_audio.tts.models.bailingmm.bailingmm import (
+    MING3_MAX_FRAGMENT_LENGTH,
+    _split_fragments,
+    ming3_instruction,
+)
 from mlx_audio.tts.models.lingv3_tts.speaker import SpeakerEncoder
 from mlx_audio.utils import resample_audio
 
@@ -65,20 +69,24 @@ class Talker:
                      max_steps: int = 750) -> Generator[np.ndarray, None, None]:
         cancel = cancel or threading.Event()
         # Wait for another voice request outside the worker, so it can keep advancing.
-        with self.lock, ExitStack() as cleanup:
-            stream = self._synthesize(text, voice, cancel, max_steps)
-            cleanup.callback(on_metal(stream.close))
-
-            @on_metal
-            def advance() -> np.ndarray | None:
-                return next(stream, None)
-
-            while not cancel.is_set():
-                audio = advance()
-                if audio is None:
+        with self.lock:
+            for fragment in _split_fragments(text, MING3_MAX_FRAGMENT_LENGTH):
+                if cancel.is_set():
                     return
-                if not cancel.is_set():
-                    yield audio
+                with ExitStack() as cleanup:
+                    stream = self._synthesize(fragment, voice, cancel, max_steps)
+                    cleanup.callback(on_metal(stream.close))
+
+                    @on_metal
+                    def advance() -> np.ndarray | None:
+                        return next(stream, None)
+
+                    while not cancel.is_set():
+                        audio = advance()
+                        if audio is None:
+                            break
+                        if not cancel.is_set():
+                            yield audio
 
     def _synthesize(self, text: str, voice: str | torch.Tensor,
                     cancel: threading.Event, max_steps: int) -> Generator[np.ndarray, None, None]:

@@ -31,6 +31,7 @@ class LatentSampler:
         self.owner = threading.current_thread()
         self.producer_threads: list[threading.Thread] = []
         self.closed_on: threading.Thread | None = None
+        self.texts: list[str] = []
 
     def _speaker_embeddings(self, _speaker: mx.array | None, _zero: bool) -> list[mx.array]:
         return []
@@ -41,6 +42,7 @@ class LatentSampler:
                flow_steps: int) -> Iterator[tuple[mx.array, bool]]:
         self.consumed = 0
         self.closed_on = None
+        self.texts.append(_text)
         try:
             for index in range(min(max_decode_steps, self.latents.shape[1])):
                 self.producer_threads.append(threading.current_thread())
@@ -165,6 +167,22 @@ def test_next_utterance_has_fresh_decoder_state_after_cancellation(
     actual = talker.synthesize("hello")
     # Then it starts from clean state rather than retaining the cancelled audio tail.
     np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+def test_long_input_is_spoken_in_complete_bounded_fragments(
+    speech: tuple[Talker, LatentSampler],
+) -> None:
+    # Given text longer than one native Talker fragment.
+    talker, sampler = speech
+    text = " ".join(f"word{index}" for index in range(120))
+    expected = whole_audio(sampler, sampler.latents.shape[1])
+    # When the complete request is synthesized.
+    actual = talker.synthesize(text)
+    # Then every input word reaches a bounded request with fresh decoder state.
+    assert len(sampler.texts) == 3
+    assert all(len(piece.split()) <= 50 for piece in sampler.texts)
+    assert " ".join(sampler.texts) == text
+    np.testing.assert_allclose(actual, np.tile(expected, 3), atol=1e-5, rtol=1e-5)
 
 
 @pytest.mark.parametrize(("text", "cancelled"), [("", False), ("hello", True)])
