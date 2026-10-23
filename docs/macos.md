@@ -10,7 +10,8 @@ The Linux/Windows CUDA and ROCm backend remains available.
 Use an Apple Silicon Mac with at least 16 GB unified memory, Python 3.13
 (managed by `uv`), and approximately 13 GB free disk total, including the
 8.8 GB four-bit model. A 32 GB or larger Mac gives other applications
-more room. Install `uv` first if it is not already available.
+more room. Install `uv` and Git first if they are not already available.
+Git is required to install the pinned MLX Audio source revision.
 
 ```sh
 bash setup_mac.sh
@@ -65,7 +66,7 @@ in 160 ms and its first spoken audio in about 4.2 seconds. Synthesizing a
 three-second sentence took about 4.4 seconds. These are individual measurements,
 not latency guarantees.
 
-The incremental implementation passes all 17 checks above, including decoder
+The Mac regression suite above checks decoder
 continuity, final flushes, step limits, cancellation, Metal thread ownership,
 random-state compilation, and the existing cache/rollback checks.
 With the full model on the same Mac, three warm runs per prompt at ten flow
