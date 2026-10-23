@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from collections.abc import Generator
@@ -99,9 +100,11 @@ class Talker:
         anchor = None if cloned else self.anchors.get(voice)
         instruction = None if cloned else (
             anchor["instruction"] if anchor and anchor["instruction"] else ming3_instruction(ip=voice))
+        if re.search(r"[\u4e00-\u9fff]", text):
+            anchor = None  # Acoustic anchors are English clips; keep any voice-design instruction.
         speaker = mx.array(voice.float().numpy()) if cloned else None
         speaker = self.t._speaker_embeddings(speaker, not cloned)
-        prompt = "Please generate speech based on the following description.\nTarget language: English.\n"
+        prompt = "Please generate speech based on the following description.\n"
         pending: list[mx.array] = []
         state, pkv, calls = (None, None, None), None, 0
         for step, (latent, last) in enumerate(self.t.sample(

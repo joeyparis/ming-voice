@@ -33,6 +33,7 @@ class LatentSampler:
         self.producer_threads: list[threading.Thread] = []
         self.closed_on: threading.Thread | None = None
         self.texts: list[str] = []
+        self.references: list[tuple[str | None, mx.array | None]] = []
 
     def _speaker_embeddings(self, _speaker: mx.array | None, _zero: bool) -> list[mx.array]:
         return []
@@ -44,6 +45,7 @@ class LatentSampler:
         self.consumed = 0
         self.closed_on = None
         self.texts.append(_text)
+        self.references.append((prompt_text, prompt_latent))
         try:
             for index in range(min(max_decode_steps, self.latents.shape[1])):
                 self.producer_threads.append(threading.current_thread())
@@ -250,3 +252,26 @@ def test_anchor_setting_keeps_designed_voices_when_builtin_anchors_are_disabled(
     # Then disabling ordinary anchors preserves only the designed voice.
     assert set(talker.anchors) == ({"builtin", "designed"} if enabled else {"designed"})
     assert talker.designed_voices == ["designed"]
+
+
+@pytest.mark.parametrize(("text", "anchored"), [
+    ("Hello there.", True),
+    ("你好。", False),
+    ("Hello，你好。", False),
+])
+def test_english_acoustic_anchor_is_used_only_without_chinese_text(
+    speech: tuple[Talker, LatentSampler], text: str, anchored: bool,
+) -> None:
+    # Given an English acoustic reference for the selected voice.
+    talker, sampler = speech
+    talker.anchors["US_Stella"] = {
+        "text": "Hello.", "latents": sampler.latents, "instruction": None,
+    }
+    # When the request contains English, Chinese, or mixed text.
+    audio = talker.synthesize(text)
+    # Then only English-only text is conditioned on the English reference.
+    reference_text, reference_latents = sampler.references[0]
+    assert (reference_text is not None) is anchored
+    assert (reference_latents is not None) is anchored
+    assert audio.size > 0
+    assert np.isfinite(audio).all()
