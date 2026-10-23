@@ -253,9 +253,15 @@ def _load():
             log(f"smart turn model not found ({turn_detect.MODEL}); using the fixed end-of-turn pause")
     ENGINE["custom_voices"] = {}
     VOICE_DIR.mkdir(exist_ok=True)
+    speaker_size = (ENGINE["talker"].t.spk_head.weight.shape[1] if IS_MLX
+                    else ENGINE["talker"].t.model.config.hidden_size)
     for f in sorted(VOICE_DIR.glob("*.pt")):
         try:
-            ENGINE["custom_voices"][f.stem] = torch.load(f, map_location="cpu" if IS_MLX else "cuda:0")
+            embedding = torch.load(f, map_location="cpu" if IS_MLX else "cuda:0")
+            if embedding.numel() != speaker_size:
+                log(f"skipping voice {f.name}: incompatible backend embedding; clone it again on this backend")
+                continue
+            ENGINE["custom_voices"][f.stem] = embedding
         except Exception as e:
             log(f"could not load voice {f.name}: {e}")
     _warmup()

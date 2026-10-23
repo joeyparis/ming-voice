@@ -1,6 +1,7 @@
 """Small real Metal models exercise rollback without downloading full weights."""
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import mlx.core as mx
 import numpy as np
@@ -115,3 +116,31 @@ def test_snapshot_restores_history_after_context_reset(thinker: Thinker) -> None
     assert thinker.history == [{"user": "keep", "content": "this"}]
     assert thinker.rebuild
     assert thinker.ctx_len() == 0
+
+
+def test_startup_skips_voices_from_an_incompatible_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import server
+
+    # Given raw Mac and projected CUDA voice files, and no full model construction.
+    torch.save(torch.zeros(1, 192), tmp_path / "mac.pt")
+    torch.save(torch.zeros(16), tmp_path / "cuda.pt")
+    talker = SimpleNamespace(
+        designed_voices=[],
+        t=SimpleNamespace(spk_head=SimpleNamespace(weight=torch.empty(16, 192))),
+    )
+    monkeypatch.setattr(server, "ENGINE", {})
+    monkeypatch.setattr(server, "VOICES", ["US_Stella"])
+    monkeypatch.setattr(server, "VOICE_DIR", tmp_path)
+    monkeypatch.setattr(server, "Thinker", lambda: None)
+    monkeypatch.setattr(server, "Talker", lambda **_kwargs: talker)
+    monkeypatch.setattr(server, "_warmup", lambda: None)
+    monkeypatch.setattr(server, "load_conversation", lambda _thinker: None)
+    monkeypatch.setenv("MING_SMART_TURN", "0")
+    # When startup loads the saved voices.
+    with torch.set_grad_enabled(torch.is_grad_enabled()):
+        server._load()
+    # Then only a usable voice is advertised, and neither saved file is removed.
+    assert list(server.ENGINE["custom_voices"]) == ["mac"]
+    assert len(list(tmp_path.glob("*.pt"))) == 2
