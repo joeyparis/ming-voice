@@ -10,7 +10,7 @@ import torch
 from mlx_audio.sts.models.ming_v3_audio import Model, ModelConfig
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from mlx_thinker import Thinker
+from mlx_thinker import AudioFeatures, Thinker
 from metal_worker import on_metal
 
 
@@ -116,6 +116,48 @@ def test_snapshot_restores_history_after_context_reset(thinker: Thinker) -> None
     assert thinker.history == [{"user": "keep", "content": "this"}]
     assert thinker.rebuild
     assert thinker.ctx_len() == 0
+
+
+@pytest.fixture
+@on_metal
+def transcription(thinker: Thinker, monkeypatch: pytest.MonkeyPatch) -> Thinker:
+    # Keep real model/cache execution, with a tiny matching tokenizer vocabulary.
+    class Tokenizer:
+        def __call__(self, _text: str, **_kwargs: bool | str) -> SimpleNamespace:
+            return SimpleNamespace(input_ids=torch.tensor([[1, 2]]))
+
+        def decode(self, tokens: list[int], **_kwargs: bool) -> str:
+            return " ".join(map(str, tokens))
+
+    monkeypatch.setattr(thinker, "tok", Tokenizer(), raising=False)
+    monkeypatch.setattr(thinker, "_audio_input", lambda _wav: ("", {}))
+    thinker.model.lm_head.weight = mx.zeros_like(thinker.model.lm_head.weight)
+    return thinker
+
+
+@on_metal
+def test_transcription_never_exposes_temporary_conversation_state(
+    transcription: Thinker, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given live history that unlocked health/hello readers can observe during ASR.
+    th = transcription
+    th._prefill(torch.tensor([[1, 2, 3]]), {})
+    th.history = [{"user": "keep", "content": "visible"}]
+    th.pending = "<|role_end|>"
+    expected = (th.ctx_len(), list(th.history), th.pending, th.epoch)
+    seen = []
+    prefill = Thinker._prefill
+
+    def observe(request: Thinker, ids: torch.Tensor, feats: AudioFeatures) -> int:
+        seen.append((th.ctx_len(), list(th.history), th.pending, th.epoch))
+        return prefill(request, ids, feats)
+
+    monkeypatch.setattr(Thinker, "_prefill", observe)
+    # When transcription prefills and decodes on the real tiny model.
+    th.transcribe(np.zeros(16000, np.float32), max_new_tokens=2)
+    # Then readers see the live state throughout, not an empty ASR conversation.
+    assert seen == [expected]
+    assert (th.ctx_len(), th.history, th.pending, th.epoch) == expected
 
 
 def test_startup_skips_voices_from_an_incompatible_backend(

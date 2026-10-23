@@ -161,16 +161,17 @@ class Thinker:
                   f"<role>HUMAN</role>{human}{ASR_INSTRUCTION}<|role_end|>"
                   "<role>ASSISTANT</role>\n<think></think>")
         ids = self.tok(prompt, return_tensors="pt", add_special_tokens=False).input_ids
-        with self.isolated():
-            self.reset()
-            tok = self._prefill(ids, feats)
-            tokens = []
-            limit = min(max_new_tokens, int(len(wav16k) / 16000 * 7) + 16)
-            for _ in range(limit):
-                if tok in {156892, 156895} or cancel is not None and cancel.is_set():
-                    break
-                tokens.append(tok)
-                tok = self._step(tok)
+        request = copy.copy(self)
+        request._clear_state()
+        request.cur_len = 0
+        tok = request._prefill(ids, feats)
+        tokens = []
+        limit = min(max_new_tokens, int(len(wav16k) / 16000 * 7) + 16)
+        for _ in range(limit):
+            if tok in {156892, 156895} or cancel is not None and cancel.is_set():
+                break
+            tokens.append(tok)
+            tok = request._step(tok)
         if cancel is not None and cancel.is_set():
             return ""
         text, _ = decode_transcript(self.tok.decode(tokens, skip_special_tokens=True))
