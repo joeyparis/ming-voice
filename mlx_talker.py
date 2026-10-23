@@ -40,6 +40,8 @@ class Talker:
         self.anchors = {}
         for path in sorted(VoicePolicy.ANCHOR_DIR.glob("*.pt")):
             anchor = torch.load(path, map_location="cpu", weights_only=True)
+            if not anchor.get("instruction") and os.environ.get("MING_VOICE_ANCHORS", "1") != "1":
+                continue
             self.anchors[path.stem] = {
                 "text": anchor["text"],
                 "latents": mx.array(anchor["latents"].float().numpy()),

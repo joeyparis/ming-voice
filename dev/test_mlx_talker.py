@@ -8,6 +8,7 @@ from pathlib import Path
 import mlx.core as mx
 import numpy as np
 import pytest
+import torch
 from mlx_audio.tts.models.bailingmm.bailingmm import AudioVAE
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -227,3 +228,25 @@ def test_compiled_flow_preserves_seed_and_advances_random_state(
     # Then it neither freezes random noise nor ignores a reset seed.
     np.testing.assert_array_equal(first, repeated)
     assert not np.array_equal(first, following)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_anchor_setting_keeps_designed_voices_when_builtin_anchors_are_disabled(
+    speech: tuple[Talker, LatentSampler], monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, enabled: bool,
+) -> None:
+    # Given one built-in anchor and one explicitly designed voice.
+    _, sampler = speech
+    for name, instruction in (("builtin", None), ("designed", "custom voice")):
+        torch.save(
+            {"text": name, "latents": torch.zeros(1, 1, 4), "instruction": instruction},
+            tmp_path / f"{name}.pt",
+        )
+    monkeypatch.setattr("mlx_talker.NativeTalker.from_pretrained", lambda _path: sampler)
+    monkeypatch.setattr("mlx_talker.VoicePolicy.ANCHOR_DIR", tmp_path)
+    monkeypatch.setenv("MING_VOICE_ANCHORS", "1" if enabled else "0")
+    # When the real constructor loads anchors with that setting.
+    talker = Talker()
+    # Then disabling ordinary anchors preserves only the designed voice.
+    assert set(talker.anchors) == ({"builtin", "designed"} if enabled else {"designed"})
+    assert talker.designed_voices == ["designed"]
