@@ -160,6 +160,31 @@ def test_transcription_never_exposes_temporary_conversation_state(
     assert (th.ctx_len(), th.history, th.pending, th.epoch) == expected
 
 
+@on_metal
+def test_transcription_blocks_repeated_ten_token_sequences(transcription: Thinker) -> None:
+    # Given a real model whose tied logits always greedily select token zero.
+    # When ASR reaches the point where another zero would repeat a ten-token run.
+    text = transcription.transcribe(np.zeros(16000, np.float32), max_new_tokens=11)
+    # Then it chooses the next available token rather than repeat that sequence.
+    assert list(map(int, text.split())) == [0] * 10 + [1]
+
+
+@on_metal
+def test_transcription_normalizes_punctuation_tags(
+    transcription: Thinker, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given ASR output with the model's punctuation tokens and extra whitespace.
+    monkeypatch.setattr(
+        transcription.tok, "decode",
+        lambda *_args, **_kwargs: "English\t turn  on <comma> lights <period>\n"
+        "Is it ready <question> Yes <exclamation> ",
+    )
+    # When the public transcription method returns it to the client.
+    text = transcription.transcribe(np.zeros(16000, np.float32), max_new_tokens=1)
+    # Then text consumers receive normal punctuation, not raw model tags.
+    assert text == "turn on, lights. Is it ready? Yes!"
+
+
 def test_startup_skips_voices_from_an_incompatible_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
