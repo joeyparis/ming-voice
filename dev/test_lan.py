@@ -3,7 +3,7 @@ import ast
 import os
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from starlette.requests import Request
@@ -22,15 +22,25 @@ exec(compile(ast.Module(body=[handler], type_ignores=[]), str(server_path), "exe
 lan_status = getattr(handler_module, "lan_status")
 
 
-def test_phone_setup_reports_host_platform_when_requested_locally(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("host", [
+    ("darwin", False, "darwin"),
+    ("linux", False, "linux"),
+    ("win32", False, "win32"),
+    ("linux", True, "win32"),
+])
+def test_phone_setup_reports_host_platform_when_requested_locally(
+        monkeypatch: pytest.MonkeyPatch, host: tuple[str, bool, str]) -> None:
     # Given an idle phone proxy and a request on the local UI socket.
+    platform, wsl, expected = host
+    monkeypatch.setattr(handler_module, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(handler_module, "os",
+                        SimpleNamespace(path=SimpleNamespace(exists={"/dev/dxg": wsl}.__getitem__)))
     monkeypatch.setattr(lan, "phone_urls", lambda: [])
     monkeypatch.setattr(lan, "access_key", lambda: "test-access-key")
     request = Request({"type": "http", "server": ("127.0.0.1", 8008)})
     # When the browser requests phone setup details.
     result = lan_status(request)
     # Then startup instructions can follow the host, not the browser's OS.
-    expected = "win32" if os.path.exists("/dev/dxg") else sys.platform
     assert result["platform"] == expected
     assert result["local"] is True
     assert result["running"] is False
