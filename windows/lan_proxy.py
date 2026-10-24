@@ -37,7 +37,11 @@ def lan_ips():
         s.close()
     except OSError:
         pass
-    for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+    try:
+        host_addresses = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except socket.gaierror:
+        host_addresses = []  # a usable default-route address does not require a resolvable hostname
+    for info in host_addresses:
         ips.append(info[4][0])
     out = []
     for i, ip in enumerate(ips):
@@ -71,7 +75,8 @@ def ensure_cert(ips):
     CERTS.mkdir(exist_ok=True)
     cmd = _openssl()
     if cmd is None:
-        sys.exit("openssl not found (install Git for Windows, or openssl in WSL)")
+        sys.exit("openssl not found (install OpenSSL with your Mac/Linux package manager, "
+                 "or install Git for Windows or openssl in WSL)")
     host = socket.gethostname()
     san = ",".join([f"IP:{ip}" for ip in names] + [f"DNS:{host}", "DNS:localhost"])
     wsl = cmd[0] == "wsl"
@@ -150,7 +155,8 @@ async def main():
             await asyncio.sleep(10)
 
     asyncio.create_task(heartbeat())
-    print(f"Phone access: https://{ips[0]}:{args.port}  (open the QR code on http://localhost:8000 -> Phone)")
+    print(f"Phone access: https://{ips[0]}:{args.port}  "
+          f"(open the QR code on http://localhost:{os.environ.get('PORT', '8000')} -> Phone)")
     async with server:
         await server.serve_forever()
 

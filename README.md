@@ -200,9 +200,21 @@ with the paths on Linux being `.venv/bin/python windows/ming_client.py` and `min
 
 ### On your phone
 
-Start with `windows\Ming Voice (phone).cmd` (or run `python windows\lan_proxy.py` on Windows next to a running
-server), press **Phone** in the app on the PC, and scan the QR code. The phone opens
+On Windows, start with `windows\Ming Voice (phone).cmd` (or run `python windows\lan_proxy.py` next to a running
+server). On Linux, use `ming-voice --phone`. Press **Phone** in the app on the host computer and scan the QR code.
+The phone opens
 `https://<pc-ip>:8443/?key=…`; the key is swapped for a cookie, so the link only has to be opened once.
+
+With a server already running and a prepared `.venv`, Mac and Linux hosts can also start just the HTTPS proxy
+from a second terminal in the Ming Voice folder:
+
+```sh
+bash phone.sh
+```
+
+Leave that terminal open, connect the phone to the same Wi-Fi network, and scan the QR code. Allow microphone
+access and press **Start conversation**. Opening the phone client takes over from the current browser client.
+This launcher does not install or start the model backend; Mac voice inference requires separate backend support.
 
 - Phones only allow the microphone over HTTPS, so the proxy uses a **self-signed certificate** (created on first
   run in `certs/`). The phone warns once that the connection isn't private: tap *Advanced → Proceed*

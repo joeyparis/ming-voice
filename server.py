@@ -399,7 +399,8 @@ def lan_status(request: Request):
     if (request.scope.get("server") or (None, None))[1] == lan.LAN_PORT:
         return {"local": False}
     urls = lan.phone_urls()
-    return {"local": True, "running": bool(urls), "urls": urls,
+    platform = "win32" if os.path.exists("/dev/dxg") else sys.platform
+    return {"local": True, "running": bool(urls), "urls": urls, "platform": platform,
             "qr_svg": lan.qr_svg(urls[0]) if urls else None, "key": lan.access_key()}
 
 
